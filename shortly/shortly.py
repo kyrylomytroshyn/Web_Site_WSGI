@@ -1,6 +1,8 @@
 """A simple URL shortener using Werkzeug and redis."""
+import json
 import os
-
+from datetime import datetime
+from createdb import BoardDataBase
 import redis
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
@@ -16,28 +18,13 @@ from werkzeug.wrappers import Request
 from werkzeug.wrappers import Response
 
 
-def base36_encode(number):
-    assert number >= 0, "positive integer required"
-    if number == 0:
-        return "0"
-    base36 = []
-    while number != 0:
-        number, i = divmod(number, 36)
-        base36.append("0123456789abcdefghijklmnopqrstuvwxyz"[i])
-    return "".join(reversed(base36))
-
-
-def is_valid_url(url):
-    parts = url_parse(url)
-    return parts.scheme in ("http", "https")
-
-
 def get_hostname(url):
     return url_parse(url).netloc
 
 
-class Shortly:
+class BoardWithComments:
     def __init__(self, config):
+        self.database_worker = BoardDataBase()
         self.redis = redis.Redis(config["redis_host"], config["redis_port"])
         template_path = os.path.join(os.path.dirname(__file__), "templates")
         self.jinja_env = Environment(
@@ -47,57 +34,58 @@ class Shortly:
 
         self.url_map = Map(
             [
-                Rule("/", endpoint="new_url"),
-                Rule("/<short_id>", endpoint="follow_short_link"),
-                Rule("/<short_id>+", endpoint="short_link_details"),
+                Rule("/", endpoint="layout"),
+                Rule("/new_post", endpoint="new_post"),
+                Rule("/<id>", endpoint="post_info"),
             ]
         )
 
-    def on_new_url(self, request):
+    def on_layout(self, request):
+        post_list = list()
+        for post in self.database_worker.get_posts():
+            posts = dict()
+            posts['title'] = post[2]
+            posts['text'] = post[1]
+            posts['id'] = post[0]
+            post_list.append(posts)
+        return self.render_template("layout.html", posts=post_list)
+
+    def on_post_info(self, request, id):
+        post_info = self.database_worker.get_post_info(id)
+        post = dict()
+        comments = list()
+        post['datetime'] = post_info[3][:10]
+        post['title'] = post_info[2]
+        post['author'] = post_info[1]
+        post['text'] = post_info[0]
+        for cmnt in self.database_worker.get_comments(id):
+            comment_dict = dict()
+            comment_dict['author'] = cmnt[1]
+            comment_dict['text'] = cmnt[0]
+            comments.append(comment_dict)
+        if request.method == "POST":
+            author = request.form["author"]
+            text = request.form["text"]
+            self.database_worker.add_comment(author=author, text=text, board_id=id)
+            return redirect(f"/{id}")
+        return self.render_template("post_details.html", post=post, comments=comments)
+
+    def on_new_post(self, request):
         error = None
         url = ""
         if request.method == "POST":
-            url = request.form["url"]
-            if not is_valid_url(url):
-                error = "Please enter a valid URL"
-            else:
-                short_id = self.insert_url(url)
-                return redirect(f"/{short_id}+")
-        return self.render_template("new_url.html", error=error, url=url)
-
-    def on_follow_short_link(self, request, short_id):
-        link_target = self.redis.get(f"url-target:{short_id}")
-        if link_target is None:
-            raise NotFound()
-        self.redis.incr(f"click-count:{short_id}")
-        return redirect(link_target)
-
-    def on_short_link_details(self, request, short_id):
-        link_target = self.redis.get(f"url-target:{short_id}")
-        if link_target is None:
-            raise NotFound()
-        click_count = int(self.redis.get(f"click-count:{short_id}") or 0)
-        return self.render_template(
-            "short_link_details.html",
-            link_target=link_target,
-            short_id=short_id,
-            click_count=click_count,
-        )
+            author = request.form["author"]
+            title = request.form["title"]
+            text = request.form["text"]
+            self.database_worker.add_post(text=text, author=author, title=title,
+                                          now_time=datetime.now())
+            return redirect("/")
+        return self.render_template("new_post.html", error=error, url=url)
 
     def error_404(self):
         response = self.render_template("404.html")
         response.status_code = 404
         return response
-
-    def insert_url(self, url):
-        short_id = self.redis.get(f"reverse-url:{url}")
-        if short_id is not None:
-            return short_id
-        url_num = self.redis.incr("last-url-id")
-        short_id = base36_encode(url_num)
-        self.redis.set(f"url-target:{short_id}", url)
-        self.redis.set(f"reverse-url:{url}", short_id)
-        return short_id
 
     def render_template(self, template_name, **context):
         t = self.jinja_env.get_template(template_name)
@@ -123,7 +111,7 @@ class Shortly:
 
 
 def create_app(redis_host="localhost", redis_port=6379, with_static=True):
-    app = Shortly({"redis_host": redis_host, "redis_port": redis_port})
+    app = BoardWithComments({"redis_host": redis_host, "redis_port": redis_port})
     if with_static:
         app.wsgi_app = SharedDataMiddleware(
             app.wsgi_app, {"/static": os.path.join(os.path.dirname(__file__), "static")}
