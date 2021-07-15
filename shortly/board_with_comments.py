@@ -1,5 +1,4 @@
 """A simple URL shortener using Werkzeug and redis."""
-import json
 import os
 from datetime import datetime
 from createdb import BoardDataBase
