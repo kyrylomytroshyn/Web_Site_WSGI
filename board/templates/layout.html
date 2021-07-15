@@ -1,0 +1,17 @@
+<!doctype html>
+<title>{% block title %}{% endblock %}</title>
+<link rel=stylesheet href=/static/style_layout.css type=text/css>
+
+<div class=box>
+    <p style="color: green; font-size: 30px"><b>My Board Service</b></p>
+</div>
+<div class=box>
+  <h1><a href="/new_post" style = "color: blue">ADD NEW POST</a></h1>
+  {% for post in posts %}
+   <div class=box>
+       <a href="/{{ post['id'] }}" class="post-head">
+       <p style="color: green; font-size: 30px"><b>{{ post['title'] }}</b><br/><br/></p></a>
+       <p style="font-size: 15px"><b><center>{{ post['text'] }}</center></b></p>
+   </div>
+  {% endfor %}
+</div>
